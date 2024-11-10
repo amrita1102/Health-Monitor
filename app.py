@@ -3,6 +3,7 @@ from dash import dcc, html, Input, Output, dash_table, State
 import plotly.express as px
 import plotly.colors as pcolors
 import pdfplumber
+import pandas as pd
 from datetime import datetime
 from io import BytesIO
 import base64
@@ -10,7 +11,8 @@ import re
 from collections import defaultdict
 
 # Initialize the Dash app
-app = dash.Dash(__name__)
+external_stylesheets = ['https://fonts.googleapis.com/css2?family=Sour+Gummy&display=swap']
+app = dash.Dash(__name__, external_stylesheets = external_stylesheets)
 
 # List of valid test names and units for filtering
 VALID_UNITS = ["g/dL", "mg/dL", "mmol/L", "IU/L", "%", "fl", "pg", "pg/mL", "µL", "nmol/L",
@@ -83,7 +85,8 @@ def extract_all_data_from_pdf(content):
 
 # Layout of the Dash app
 app.layout = html.Div([
-    html.H1("Health Monitoring System",style={'color':'RebeccaPurple'}),
+    html.H1("Health Monitoring System",style={'color':'#007eff',
+                                              'font-family': 'Sour Gummy'}),
     
     html.Div([
         dcc.Upload(
@@ -107,19 +110,22 @@ app.layout = html.Div([
         html.Div(id='upload-feedback', style={'marginTop': '20px'}),
     ], style={'textAlign': 'center'}),
 
-    # Dropdown to select multiple Names for comparison
-    html.Div([
-        html.Label("Select Patient(s) for Comparison:"),
-        dcc.Dropdown(
-            id='patient-dropdown',
-            options=[],
-            placeholder="Select one or more patients",
-            multi=True  # Allow multiple selections
-        )
-    ], style={'width': '50%', 'margin': 'auto', 'padding': '10px'}),
-
+    # Tabs for switching between views
+    dcc.Tabs([
+        dcc.Tab(label='Visualize Results', children=[
     # Toggle button for tabular or chart view
     html.Div([
+        # Dropdown to select multiple Names for comparison
+        html.Div([
+            html.Label("Select Patient(s) for Comparison:"),
+            dcc.Dropdown(
+                id='patient-dropdown',
+                options=[],
+                placeholder="Select one or more patients",
+                multi=True  # Allow multiple selections
+            )
+        ], style={'width': '50%', 'margin': 'auto', 'padding': '10px'}),
+        
         html.Label("View:"),
         dcc.RadioItems(
             id='view-toggle',
@@ -131,6 +137,15 @@ app.layout = html.Div([
             labelStyle={'display': 'inline-block', 'marginRight': '10px'}
         )
     ], style={'width': '50%', 'margin': 'auto', 'padding': '10px'}),
+
+    html.Div([
+        html.Label("Rows per page:"),
+        dcc.Input(id="page-size-input", type="number", value=10, min=1, step=1)
+    ], style={'margin': '10px 0'}),
+
+    # Export button and download component
+    html.Button("Export to CSV", id="export-button", n_clicks=0),
+    dcc.Download(id="download-dataframe-csv"),
 
     # Tabular view
     html.Div(id='tabular-view', children=[
@@ -150,15 +165,75 @@ app.layout = html.Div([
                 'fontWeight': 'bold'
             },
             page_size=10,
+            filter_action="native",
             sort_action="native"  # Enable sorting feature
         )
     ], style={'display': 'block'}),  # Default to visible
-
+        
     # Charts view
     html.Div(id='charts-view', children=[
         html.Div(id='chart-divs', children=[])  # Will hold separate divs for each test chart
     ], style={'display': 'none'})  # Default to hidden
+]),
+dcc.Tab(label='Analyze Results', children=[
+            html.Div([              
+                # Display categorized test results in a table
+                dash_table.DataTable(id='analyze-table', 
+                style_table={'overflowX': 'auto'},
+                page_size=10,
+                filter_action="native",
+                sort_action="native")
+            ])
+            ])
+    ])
 ])
+
+# Callback to display test results categorized as Low, Normal, High
+@app.callback(
+    Output('analyze-table', 'data'),
+    Output('analyze-table', 'columns'),
+    Input('data-table', 'data')
+)
+def analyze_test_results(data):       
+    # Classify test results based on reference ranges
+    for item in data:
+        # print(item)
+        value = float(item.get('Value'))
+        if len(item.get('Reference Range').split('-')) == 2:
+            low = float(item.get('Reference Range').split('-')[0].strip())
+            high = float(item.get('Reference Range').split('-')[1].strip())
+            if value < low:
+                item['Category'] = 'Low'
+            elif value > high:
+                item['Category'] = 'High'
+            else:
+                item['Category'] = 'Normal'
+        else:
+            sign = item.get('Reference Range')[0]
+            if sign == '<':
+                if value > float(item.get('Reference Range')[1:]):
+                   item['Category'] = 'High'
+                else:
+                   item['Category'] = 'Normal'
+            else:
+                if value < float(item.get('Reference Range')[1:]):
+                   item['Category'] = 'Low'
+                else:
+                   item['Category'] = 'Normal'
+    
+    # Create table columns
+    columns = [
+        {'name': 'Name', 'id': 'Name'},
+        {'name': 'Date', 'id': 'Date'},
+        {'name': 'Test Name', 'id': 'Test Name'},
+        {'name': 'Value', 'id': 'Value'},
+        {'name': 'Unit', 'id': 'Unit'},
+        {'name': 'Reference Range', 'id': 'Reference Range'},
+        {'name': 'Category', 'id': 'Category'}     
+    ]
+
+    # Return categorized results to the table
+    return data, columns
 
 # Callback to handle file upload and extract Names and test data
 @app.callback(
@@ -231,7 +306,29 @@ def toggle_view(selected_view):
         return {'display': 'block'}, {'display': 'none'}
     else:
         return {'display': 'none'}, {'display': 'block'}
+    
+@app.callback(
+    Output("data-table", "page_size"),
+    Input("page-size-input", "value")
+)
+def update_page_size(page_size):
+    return page_size or 10
 
+# Callback to handle CSV export
+@app.callback(
+    Output("download-dataframe-csv", "data"),
+    Input("export-button", "n_clicks"),
+    State("data-table", "data"),
+    prevent_initial_call=True
+)
+def export_to_csv(n_clicks, table_data):
+    if n_clicks > 0 and table_data:
+        # Convert table data to a DataFrame for export
+        df = pd.DataFrame(table_data)
+        
+        # Convert DataFrame to CSV format and create downloadable CSV
+        return dcc.send_data_frame(df.to_csv, "exported_data.csv", index=False)
+        
 # Callback to update charts for comparison
 @app.callback(
     Output('chart-divs', 'children'),
