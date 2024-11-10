@@ -86,7 +86,8 @@ def extract_all_data_from_pdf(content):
 # Layout of the Dash app
 app.layout = html.Div([
     html.H1("Health Monitoring System",style={'color':'#007eff',
-                                              'font-family': 'Sour Gummy'}),
+                                              'font-family': 'Sour Gummy',
+                                              'textAlign': 'center'}),
     
     html.Div([
         dcc.Upload(
